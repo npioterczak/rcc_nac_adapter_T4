@@ -11,7 +11,7 @@ public:
     static void initPeugeotCan();
     static void canBusToNac(const CAN_message_t &msg);
     static void nacToCanBus(const CAN_message_t &msg);
-    static void canSniff(const CAN_message_t &msg);
+    static void printPacket(const CAN_message_t &msg);;
 
 private:
     static int daysSinceYearStartFct();

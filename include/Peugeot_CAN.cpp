@@ -7,7 +7,7 @@
 #include <FlexCAN_T4.h>
 #include <EEPROM.h>
 
-#define SERIAL_SPEED 9600
+#define SERIAL_SPEED 115200
 
 // Use previously declared Teensy CAN Lib variables
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can2004;
@@ -23,9 +23,10 @@ bool Send_CAN2010_ForgedMessages = false; // Send forged CAN2010 messages to the
 bool TemperatureInF = false; // Default Temperature in Celcius
 bool mpgMi = false;
 bool kmL = false; // km/L statistics instead of L/100
+bool fixedBrightness = false; // Force Brightness value in case the calibration does not match your brightness value range
 bool noFMUX = false; // If you don't have any useful button on the main panel, turn the SRC button on steering wheel commands into MENU - only works for CAN2010 SMEG / NAC -
 byte steeringWheelCommands_Type = 0; // noFMUX extra setting : 0 = Generic, 1 = C4 I / C5 X7 NAV+MUSIC+APPS+PHONE mapping, 2 = C4 I / C5 X7 MENU mapping, 3 = C4 I / C5 X7 MENU mapping + SRC on wiper command button, 4 = C4 I / C5 X7 MENU mapping + TRIP on wiper command button, 5 = C4 I / C5 X7 MENU mapping + SRC on wiper command button + TRIP on ESC button
-byte languageID = 0; // Default is FR: 0 - EN: 1 / DE: 2 / ES: 3 / IT: 4 / PT: 5 / NL: 6 / BR: 9 / TR: 12 / RU: 14
+byte languageID = 9; // Default is FR: 0 - EN: 1 / DE: 2 / ES: 3 / IT: 4 / PT: 5 / NL: 6 / BR: 9 / TR: 12 / RU: 14
 bool listenCAN2004Language = false; // Switch language on CAN2010 devices if changed on supported CAN2004 devices, default: no
 byte Time_day = 1; // Default day if the RTC module is not configured
 byte Time_month = 1; // Default month if the RTC module is not configured
@@ -33,8 +34,10 @@ int Time_year = 2022; // Default year if the RTC module is not configured
 byte Time_hour = 0; // Default hour if the RTC module is not configured
 byte Time_minute = 0; // Default minute if the RTC module is not configured
 bool resetEEPROM = false; // Switch to true to reset all EEPROM values
-bool CVM_Emul = true; // Send suggested speed from Telematic to fake CVM (Multifunction camera inside the windshield) frame
+bool CVM_Emul = false; // Send suggested speed from Telematic to fake CVM (Multifunction camera inside the windshield) frame
 bool generatePOPups = false; // Generate notifications from alerts journal - useful for C5 (X7)
+bool steeringWheelCommands_PassThrough = true; // Direct send message from CV00 to CAN2010
+bool forceTimeSet = false;
 
 bool emulateVIN = false; // Replace network VIN by another (donor car for example)
 char vinNumber[18] = "VF3XXXXXXXXXXXXXX";
@@ -100,32 +103,23 @@ byte alertsParametersCache[] = {0, 0, 0, 0, 0, 0, 0, 0}; // Max 8
 bool isBVMP = false;
 byte statusOpenings = 0;
 byte notificationParameters = 0;
-int tmpVal = 0;
 
 // Language & Unit CAN2010 value
 byte languageAndUnitNum = (languageID * 4) + 128;
-void Peugeot_CAN::canSniff(const CAN_message_t &msg) {
-  Serial.print("MB "); Serial.print(msg.mb);
-  Serial.print("  OVERRUN: "); Serial.print(msg.flags.overrun);
-  Serial.print("  LEN: "); Serial.print(msg.len);
-  Serial.print(" EXT: "); Serial.print(msg.flags.extended);
-  Serial.print(" TS: "); Serial.print(msg.timestamp);
-  Serial.print(" ID: "); Serial.print(msg.id, HEX);
-  Serial.print(" Buffer: ");
-  for ( uint8_t i = 0; i < msg.len; i++ ) {
-    Serial.print(msg.buf[i], HEX); Serial.print(" ");
-  } Serial.println();
-}
+
 void Peugeot_CAN::initPeugeotCan() {
+    
+    int tmpVal;
+
     can2004.begin();
-    can2004.setClock(CLK_60MHz);
+    can2004.setClock(CLK_24MHz);
     // can2004.setMaxMB(16);
     can2004.setBaudRate(125000);
     // can2004.enableFIFO();
     // can2004.onReceive(canSniff);
 // init can from nac/rcc to car entertainment
     can2010.begin();
-    can2010.setClock(CLK_60MHz);
+    can2010.setClock(CLK_24MHz);
     // can2010.setMaxMB(16);
     can2010.setBaudRate(125000);
     if (resetEEPROM) {
@@ -213,8 +207,21 @@ void Peugeot_CAN::initPeugeotCan() {
     if (SerialEnabled) {
         // Initalize Serial for debug
         Serial.begin(SERIAL_SPEED);
-        Serial.print("test start");
     }
+
+  if (timeStatus() != timeSet || forceTimeSet) {
+    if (SerialEnabled) {
+      Serial.println("Unable to sync with the RTC");
+    }
+
+    // Set default time (01/01/2020 00:00)
+    setTime(Time_hour, Time_minute, 0, Time_day, Time_month, Time_year);
+    EEPROM.update(5, Time_day);
+    EEPROM.update(6, Time_month);
+    EEPROM.put(7, Time_year);
+  } else if (SerialEnabled) {
+    Serial.println("RTC has set the system time");
+  }
 
     // Set hour on CAN-BUS Clock
     canMsgSnd.buf[0] = hour();
@@ -253,10 +260,6 @@ void Peugeot_CAN::initPeugeotCan() {
         Serial.println();
     }
 
-    // Init callback for frames coming from entertainment bus
-    can2004.onReceive(Peugeot_CAN::canSniff);
-    // Init callback for frames coming from nac/rcc
-    can2010.onReceive(Peugeot_CAN::nacToCanBus);
 }
 
 void Peugeot_CAN::sendPOPup(bool present, int id, byte priority, byte parameters) {
@@ -319,7 +322,26 @@ void Peugeot_CAN::sendPOPup(bool present, int id, byte priority, byte parameters
     can2010.write(canMsgSnd);
 }
 
+void Peugeot_CAN::printPacket(const CAN_message_t &msg) {
+    Serial.print("FRAME:ID=");
+        Serial.print(msg.id);
+        Serial.print(":LEN=");
+        Serial.print(msg.len);
+
+        char tmp[3];
+        for (int i = 0; i < msg.len; i++) {
+            Serial.print(":");
+
+            snprintf(tmp, 3, "%02X", msg.buf[i]);
+
+            Serial.print(tmp);
+        }
+
+        Serial.println();
+}
+
 void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
+    int tmpVal;
     int id = msg.id;
     int len = msg.len;
 
@@ -345,6 +367,7 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
         if (id == 0x15B) {
             // Do not send back converted frames between networks
         } else if (id == 0x36 && len == 8) { // Economy Mode detection
+            canMsgRcv = msg;
             if (bitRead(msg.buf[2], 7) == 1) {
                 if (!EconomyMode && SerialEnabled) {
                     Serial.println("Economy mode ON");
@@ -360,8 +383,11 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
             }
 
             tmpVal = msg.buf[3];
-
-            can2010.write(msg);
+            // Fix brightness when car lights are ON - Brightness Instrument Panel "20" > "2F" (32 > 47) - Depends on your car
+            if (fixedBrightness && tmpVal >= 32) {
+                canMsgRcv.buf[3] = 0x28; // Set fixed value to avoid low brightness due to incorrect CAN2010 Telematic calibration
+            }
+            can2010.write(canMsgRcv);
         } else if (id == 0xB6 && len == 8) {
             engineRPM = ((msg.buf[0] << 8) | msg.buf[1]) * 0.125;
             if (engineRPM > 0) {
@@ -412,7 +438,7 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
             canMsgSnd.id = 0xE6;
             canMsgSnd.len = 8;
             can2010.write(canMsgSnd);
-        } else if (id == 0x21F && len == 3) { // Steering wheel commands - Generic
+        } else if (id == 0x21F && len == 3 && !steeringWheelCommands_PassThrough) { // Steering wheel commands - Generic
             tmpVal = msg.buf[0];
             scrollValue = msg.buf[1];
 
@@ -452,7 +478,7 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
                     }
                 }
             }
-        } else if (id == 0xA2 && noFMUX && steeringWheelCommands_Type == 1) { // Steering wheel commands - C4 I / C5 X7
+        } else if (id == 0xA2 && noFMUX && steeringWheelCommands_Type == 1 && !steeringWheelCommands_PassThrough) { // Steering wheel commands - C4 I / C5 X7
             // Fake FMUX Buttons in the car
             canMsgSnd.buf[0] = 0x00;
             canMsgSnd.buf[1] = 0x00;
@@ -521,7 +547,7 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
             if (Send_CAN2010_ForgedMessages) {
                 can2004.write(canMsgSnd);
             }
-        } else if (id == 0xA2 && noFMUX && (steeringWheelCommands_Type == 2 || steeringWheelCommands_Type == 3 ||
+        } else if (id == 0xA2 && noFMUX && !steeringWheelCommands_PassThrough && (steeringWheelCommands_Type == 2 || steeringWheelCommands_Type == 3 ||
                                             steeringWheelCommands_Type == 4 || steeringWheelCommands_Type ==
                                                                                5)) { // Steering wheel commands - C4 I / C5 X7
             // Fake FMUX Buttons in the car
@@ -1280,7 +1306,6 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
         } else if (id == 0x260 && len == 8) { // Personalization settings status
             // Do not forward original message, it has been completely redesigned on CAN2010
             // Also forge missing messages from CAN2004
-
             if (msg.buf[0] == 0x01) { // User profile 1
                 canMsgSnd.buf[0] = languageAndUnitNum;
                 bitWrite(canMsgSnd.buf[1], 7, (mpgMi) ? 1 : 0);
@@ -1459,6 +1484,7 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
 }
 
 void Peugeot_CAN::nacToCanBus(const CAN_message_t &msg) {
+    int tmpVal;
     int id = msg.id;
     int len = msg.len;
 

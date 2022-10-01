@@ -232,7 +232,7 @@
                 "ARDUINO=10805",
                 "TEENSYDUINO=157",
                 "CORE_TEENSY",
-                "F_CPU=600000000",
+                "F_CPU=396000000L",
                 "LAYOUT_US_ENGLISH",
                 ""
             ],

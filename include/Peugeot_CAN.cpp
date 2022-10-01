@@ -24,9 +24,9 @@ bool TemperatureInF = false; // Default Temperature in Celcius
 bool mpgMi = false;
 bool kmL = false; // km/L statistics instead of L/100
 bool fixedBrightness = false; // Force Brightness value in case the calibration does not match your brightness value range
-bool noFMUX = false; // If you don't have any useful button on the main panel, turn the SRC button on steering wheel commands into MENU - only works for CAN2010 SMEG / NAC -
+bool noFMUX = true; // If you don't have any useful button on the main panel, turn the SRC button on steering wheel commands into MENU - only works for CAN2010 SMEG / NAC -
 byte steeringWheelCommands_Type = 0; // noFMUX extra setting : 0 = Generic, 1 = C4 I / C5 X7 NAV+MUSIC+APPS+PHONE mapping, 2 = C4 I / C5 X7 MENU mapping, 3 = C4 I / C5 X7 MENU mapping + SRC on wiper command button, 4 = C4 I / C5 X7 MENU mapping + TRIP on wiper command button, 5 = C4 I / C5 X7 MENU mapping + SRC on wiper command button + TRIP on ESC button
-byte languageID = 9; // Default is FR: 0 - EN: 1 / DE: 2 / ES: 3 / IT: 4 / PT: 5 / NL: 6 / BR: 9 / TR: 12 / RU: 14
+byte languageID = 1; // Default is FR: 0 - EN: 1 / DE: 2 / ES: 3 / IT: 4 / PT: 5 / NL: 6 / BR: 9 / TR: 12 / RU: 14
 bool listenCAN2004Language = false; // Switch language on CAN2010 devices if changed on supported CAN2004 devices, default: no
 byte Time_day = 1; // Default day if the RTC module is not configured
 byte Time_month = 1; // Default month if the RTC module is not configured
@@ -39,7 +39,7 @@ bool generatePOPups = false; // Generate notifications from alerts journal - use
 bool steeringWheelCommands_PassThrough = true; // Direct send message from CV00 to CAN2010
 bool forceTimeSet = false;
 
-bool emulateVIN = false; // Replace network VIN by another (donor car for example)
+bool emulateVIN = true; // Replace network VIN by another (donor car for example)
 char vinNumber[18] = "VF3XXXXXXXXXXXXXX";
 
 bool hasAnalogicButtons = false; // Analog buttons instead of FMUX
@@ -112,14 +112,14 @@ void Peugeot_CAN::initPeugeotCan() {
     int tmpVal;
 
     can2004.begin();
-    can2004.setClock(CLK_24MHz);
+    can2004.setClock(CLK_60MHz);
     // can2004.setMaxMB(16);
     can2004.setBaudRate(125000);
     // can2004.enableFIFO();
     // can2004.onReceive(canSniff);
 // init can from nac/rcc to car entertainment
     can2010.begin();
-    can2010.setClock(CLK_24MHz);
+    can2010.setClock(CLK_60MHz);
     // can2010.setMaxMB(16);
     can2010.setBaudRate(125000);
     if (resetEEPROM) {
@@ -476,6 +476,50 @@ void Peugeot_CAN::canBusToNac(const CAN_message_t &msg) {
                     if (Send_CAN2010_ForgedMessages) {
                         can2004.write(canMsgSnd);
                     }
+                }
+            }
+        } else if (id == 0x21F && len == 3 && steeringWheelCommands_PassThrough) { // Steering wheel commands - Generic
+            tmpVal = msg.buf[0];
+            scrollValue = msg.buf[1];
+
+            can2010.write(msg);
+
+            if (noFMUX || hasAnalogicButtons) { // Fake FMUX Buttons in the car
+                canMsgSnd.buf[0] = 0x00;
+                canMsgSnd.buf[1] = 0x00;
+                canMsgSnd.buf[2] = 0x00;
+                canMsgSnd.buf[3] = 0x00;
+                canMsgSnd.buf[4] = 0x00;
+                canMsgSnd.buf[5] = 0x02;
+                canMsgSnd.buf[6] = 0x00; // Volume potentiometer button
+                canMsgSnd.buf[7] = 0x00;
+                canMsgSnd.id = 0x122;
+                canMsgSnd.len = 8;
+                can2010.write(canMsgSnd);
+                if (Send_CAN2010_ForgedMessages) {
+                    can2004.write(canMsgSnd);
+                }
+            }
+        } else if (id == 0xA2 && steeringWheelCommands_PassThrough) { // Steering wheel commands - Generic
+            tmpVal = msg.buf[0];
+            scrollValue = msg.buf[1];
+
+            can2010.write(msg);
+
+            if (noFMUX || hasAnalogicButtons) { // Fake FMUX Buttons in the car
+                canMsgSnd.buf[0] = 0x00;
+                canMsgSnd.buf[1] = 0x00;
+                canMsgSnd.buf[2] = 0x00;
+                canMsgSnd.buf[3] = 0x00;
+                canMsgSnd.buf[4] = 0x00;
+                canMsgSnd.buf[5] = 0x02;
+                canMsgSnd.buf[6] = 0x00; // Volume potentiometer button
+                canMsgSnd.buf[7] = 0x00;
+                canMsgSnd.id = 0x122;
+                canMsgSnd.len = 8;
+                can2010.write(canMsgSnd);
+                if (Send_CAN2010_ForgedMessages) {
+                    can2004.write(canMsgSnd);
                 }
             }
         } else if (id == 0xA2 && noFMUX && steeringWheelCommands_Type == 1 && !steeringWheelCommands_PassThrough) { // Steering wheel commands - C4 I / C5 X7
@@ -1637,7 +1681,7 @@ void Peugeot_CAN::nacToCanBus(const CAN_message_t &msg) {
             canMsgSnd.len = 8;
             can2004.write(canMsgSnd);
         } else if (id == 0x15B && len == 8) {
-            if (bitRead(msg.buf[1], 2)) { // Parameters validity
+            if (msg.buf[0] != 0xFC) { // Parameters validity
                 tmpVal = msg.buf[0];
                 if (tmpVal >= 128) {
                     languageAndUnitNum = tmpVal;
